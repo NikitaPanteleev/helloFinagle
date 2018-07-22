@@ -1,0 +1,46 @@
+#!/bin/bash
+SCRIPT_PATH="${BASH_SOURCE[0]}";
+if ([ -h "${SCRIPT_PATH}" ]) then
+  while([ -h "${SCRIPT_PATH}" ]) do SCRIPT_PATH=`readlink "${SCRIPT_PATH}"`; done
+fi
+pushd . > /dev/null
+cd $(dirname ${SCRIPT_PATH}) > /dev/null
+SCRIPT_PATH=$(pwd);
+popd  > /dev/null
+
+MAIN_CLASS=com.krowd9.api.TestServer
+BASE_PATH=$(dirname $SCRIPT_PATH)
+LIB_PATH=$BASE_PATH/lib
+ARTIFACT_ID="finagle-backend-test_2.12"
+VERSION="0.1.0"
+JARFILE="$ARTIFACT_ID-$VERSION.jar"
+
+CLASSPATH=$BASE_PATH/$JARFILE
+
+for file in $LIB_PATH/*.jar
+do
+  CLASSPATH=$CLASSPATH:$file
+done
+
+export CLASSPATH
+
+if [ -z $HEAP_OPTS ]; then
+  HEAP_OPTS="-Xmx256M"
+fi
+
+if [ -z $GC_LOGGING ]; then
+  GC_LOGGING="-XX:+PrintGC -XX:+PrintGCDateStamps "
+fi
+
+if [ -z $JVM_PERFORMANCE_OPTS ]; then
+  JVM_PERFORMANCE_OPTS="-server -XX:+TieredCompilation -XX:+UseCompressedOops -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:+CMSClassUnloadingEnabled -XX:+CMSScavengeBeforeRemark -XX:+DisableExplicitGC -Djava.awt.headless=true"
+fi
+
+JAVA_OPTS="$JAVA_OPTS $HEAP_OPTS $JVM_PERFORMANCE_OPTS -Dtest-server"
+
+# If this is not a terminal then add GC_LOGGING
+if [ ! -t 1 ]; then
+  JAVA_OPTS="$JAVA_OPTS $GC_LOGGING"
+fi
+
+exec java $JAVA_OPTS $MAIN_CLASS "$@"
