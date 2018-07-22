@@ -8,8 +8,6 @@ import io.finch.syntax.get
 import io.finch.{Endpoint, Ok, path}
 import io.finch._
 
-import scala.collection.concurrent.TrieMap
-
 case class AddressBookApi(
   addressBookDb: AddressBookDbService.MethodPerEndpoint,
   userManager: UserManagerService.MethodPerEndpoint,
@@ -90,15 +88,6 @@ case class AddressBookApi(
     ).as[Params]
 
   val api: Endpoint[Page] = get("addressBook" :: path[Long] :: params) { (userId: Long, p: Params) =>
-
-    val externalIdsToInternalIds = TrieMap.empty[String, Future[Option[Long]]]
-
-    def updateMap(externalIds: Seq[String]): Unit = externalIds.foreach { externalId =>
-      externalIdsToInternalIds.getOrElseUpdate(
-        externalId,
-        userManager.getYakatakUserId(externalId).map(r => r.userId)
-      )
-    }
 
     query(
       userId = userId,
