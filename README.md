@@ -5,7 +5,8 @@ sbt run
 ```
 ## How to test
 ```
-curl -D - 127.0.0.1:8080/addressBook/1
+sbt test
+curl -D - "http://127.0.0.1:8080/addressBook/1?withId=true&limit=2&offset=Douglas%20T.%20Rossext!5"
 ```
 
 # Yakatak Backend Engineer Test #

@@ -13,7 +13,6 @@ import io.finch.test.ServiceSuite
 import io.finch.circe._
 import org.mockito.{ArgumentMatchers => m}
 import org.mockito.Mockito.when
-import io.circe.syntax._
 import io.circe.parser._
 
 class AddressBookApiTest extends fixture.FlatSpecLike
@@ -25,32 +24,67 @@ class AddressBookApiTest extends fixture.FlatSpecLike
 
   val userManager: UserManagerService.MethodPerEndpoint = mock[UserManagerService.MethodPerEndpoint]
 
-  def createService(): Service[Request, Response] = AddressBookApi(address, userManager)
+  val contacts = (0 to 250).map(i => OffsetAndContact.apply(
+    i.toString,
+    AddressBookContact.apply(s"ext$i", Some(s"name_$i"))
+  ))
+
+  when(address.getContacts(1L, GetContactsFilter(None))).thenReturn(Future.value(contacts.take(10)))
+  (0 to 250).foreach { offset =>
+    when(address.getContacts(1L, GetContactsFilter(Some(offset.toString))))
+      .thenReturn(Future.value(contacts.slice(offset, offset + 10)))
+    when(userManager.getYakatakUserId(s"ext$offset")).thenReturn(Future.value(GetYakatakUserIdResult.apply(Some(offset))))
+  }
+  when(address.getContacts(m.eq(0L), GetContactsFilter(m.any[Option[String]]))).thenReturn(Future.value(Nil))
+
+  def createService(): Service[Request, Response] = AddressBookApi(address, userManager, Config())
     .api
     .toServiceAs[Application.Json]
 
   it should "return 0 contacts list if no contacts" in { f =>
-    when(address.getContacts(m.eq(1L), m.any[GetContactsFilter])).thenReturn(Future.value(Nil))
-    val res = f(Request("/addressBook/1"))
+    val res = f(Request("/addressBook/0"))
     res.status should be(Status.Ok)
   }
 
-  it should "return contacts list if there are some contacts" in { f =>
-    val contacts = (1 to 10).map(i => OffsetAndContact.apply(
-      s"offset_$i",
-      AddressBookContact.apply(s"ext$i", Some(s"name_$i"))
-    ))
-    when(address.getContacts(m.eq(1L), m.any[GetContactsFilter])).thenReturn(Future.value(contacts))
-    when(userManager.getYakatakUserId(m.any[String])).thenReturn(Future.value(GetYakatakUserIdResult.apply(None)))
-
-    val res = f(Request("/addressBook/1"))
+  it should "return contacts with internal user ids" in { f =>
+   val res = f(Request("/addressBook/1"))
 
     res.status should be(Status.Ok)
 
     val pageJson = parse(res.contentString).flatMap(_.as[Page])
     pageJson.isRight shouldBe true
-    pageJson.right.get.data.map(_.externalId) should contain theSameElementsAs contacts.map(_.contact.externalId)
-    pageJson.right.get.data.map(_.name) should contain theSameElementsAs contacts.map(_.contact.name)
+    pageJson.right.get.data.map(_.externalId) should contain theSameElementsAs contacts.take(25).map(_.contact.externalId)
+    pageJson.right.get.data.map(_.name) should contain theSameElementsAs contacts.take(25).map(_.contact.name)
+    pageJson.right.get.nextOffset shouldBe Some("25")
+    pageJson.right.get.data.foreach{contact =>
+      contact.userId should not be empty
+      contact.name should be (Some(s"name_${contact.userId.get}"))
+      contact.externalId should be (s"ext${contact.userId.get}")
+    }
 
+  }
+
+  it should "support pagination" in { f =>
+
+    val res = f(Request("/addressBook/1?offset=10&limit=24"))
+
+    res.status should be(Status.Ok)
+
+    val pageJson = parse(res.contentString).flatMap(_.as[Page])
+    pageJson.isRight shouldBe true
+    pageJson.right.get.data.map(_.externalId) should contain theSameElementsAs (10 to 33).map(i => s"ext$i")
+    pageJson.right.get.nextOffset should be (Some("34"))
+  }
+
+  it should "support pagination in the end of data" in { f =>
+
+    val res = f(Request("/addressBook/1?offset=230&limit=50"))
+
+    res.status should be(Status.Ok)
+
+    val pageJson = parse(res.contentString).flatMap(_.as[Page])
+    pageJson.isRight shouldBe true
+    pageJson.right.get.data.map(_.externalId) should contain theSameElementsAs (230 to 250).map(i => s"ext$i")
+    pageJson.right.get.nextOffset should be (None)
   }
 }

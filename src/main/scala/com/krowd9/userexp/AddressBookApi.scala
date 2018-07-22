@@ -1,35 +1,112 @@
 package com.krowd9.userexp
 
 import com.krowd9.api.addressbookdb.{AddressBookDbService, GetContactsFilter}
-import com.krowd9.api.usermanager.{GetYakatakUserIdResult, UserManagerService}
+import com.krowd9.api.usermanager.UserManagerService
 import com.krowd9.userexp.dto.{Contact, Page}
 import com.twitter.util.Future
 import io.finch.syntax.get
 import io.finch.{Endpoint, Ok, path}
+import io.finch._
+
+import scala.collection.concurrent.TrieMap
 
 case class AddressBookApi(
   addressBookDb: AddressBookDbService.MethodPerEndpoint,
-  userManager: UserManagerService.MethodPerEndpoint
+  userManager: UserManagerService.MethodPerEndpoint,
+  config: Config
 ) {
-  val api: Endpoint[Page] = get("addressBook" :: path[Long]) { userId: Long =>
-    val result = for {
-      addresses <- addressBookDb.getContacts(userId, GetContactsFilter())
-      externalIds <- {
-        val externalIdsF: Seq[Future[(String, GetYakatakUserIdResult)]] = addresses
-          .map(_.contact.externalId)
-          .distinct
-          .map(externalId => userManager.getYakatakUserId(externalId).map(res => externalId -> res))
-        Future.collect(externalIdsF).map(_.toMap)
+
+  case class Params(
+    limit: Int,
+    offset: Option[String] = None,
+    nextOffset: Option[String] = None,
+    withId: Boolean,
+  )
+
+  def query(
+    userId: Long,
+    limit: Int,
+    withId: Boolean,
+    offset: Option[String] = None,
+    contacts: Vector[Contact] = Vector.empty,
+    map: Map[String, Option[Long]]
+  ): Future[Page] = {
+    addressBookDb
+      .getContacts(userId, GetContactsFilter(offset))
+      .flatMap(addresses => {
+        val newIds = addresses.map(_.contact.externalId).toSet -- map.keySet
+        val newMapping = newIds.toSeq.map(extId => userManager.getYakatakUserId(extId).map(intId => extId -> intId.userId))
+        Future.collect(newMapping).map(mapping => (addresses, mapping))
+      })
+      .flatMap {
+        case (addresses, newMapping) => {
+          val updatedMapping = map ++ newMapping
+          val newContacts = addresses
+            .map(addr => Contact(addr, updatedMapping.get(addr.contact.externalId).flatten)).toVector
+            .filter {
+              case contact if withId  => contact.userId.nonEmpty
+              case contact if !withId => true
+            }
+
+          val allFetchedContacts = if (contacts.lastOption == newContacts.headOption && contacts.lastOption.nonEmpty) {
+            contacts ++ newContacts.tail
+          } else {
+            contacts ++ newContacts
+          }
+
+          if (allFetchedContacts.size > limit) {
+            val nextContact = allFetchedContacts(limit)
+            val nextOffset = addresses
+              .find(addr => addr.contact.externalId == nextContact.externalId)
+              .map(addr => addr.offset)
+            Future.value(Page(
+              data = allFetchedContacts.take(limit),
+              nextOffset = nextOffset
+            ))
+          } else if (allFetchedContacts.size <= limit && addresses.size < config.dbPageSize) {
+            Future.value(Page(
+              data = allFetchedContacts,
+              nextOffset = None
+            ))
+          } else {
+            query(
+              userId = userId,
+              limit = limit,
+              withId = withId,
+              offset = addresses.lastOption.map(addr => addr.offset),
+              allFetchedContacts,
+              updatedMapping
+            )
+          }
+        }
       }
-    } yield {
-      val data = addresses.map(contact => Contact(
-        contact.contact.externalId,
-        contact.contact.name,
-        externalIds.get(contact._2.externalId).flatMap(res => res.userId))
+  }
+
+  val params = (
+    paramOption[Int]("limit").withDefault(config.defaultLimit)
+      :: paramOption[String]("offset")
+      :: paramOption[String]("nextOffset")
+      :: paramOption[Boolean]("withId").withDefault(false)
+    ).as[Params]
+
+  val api: Endpoint[Page] = get("addressBook" :: path[Long] :: params) { (userId: Long, p: Params) =>
+
+    val externalIdsToInternalIds = TrieMap.empty[String, Future[Option[Long]]]
+
+    def updateMap(externalIds: Seq[String]): Unit = externalIds.foreach { externalId =>
+      externalIdsToInternalIds.getOrElseUpdate(
+        externalId,
+        userManager.getYakatakUserId(externalId).map(r => r.userId)
       )
-      Page("example", data)
     }
 
-    result.map(Ok)
+    query(
+      userId = userId,
+      limit = math.min(p.limit, config.contactsLimit),
+      withId = p.withId,
+      offset = p.offset,
+      Vector.empty,
+      Map.empty
+    ).map(Ok)
   }
 }

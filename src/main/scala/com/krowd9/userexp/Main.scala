@@ -15,12 +15,13 @@ import io.finch.circe._
 
 
 object Main extends App {
+  val config = Config()
   val addressBookDb: AddressBookDbService.MethodPerEndpoint =
     Thrift.client.build[AddressBookDbService.MethodPerEndpoint]("127.0.0.1:7201")
   val userManager: UserManagerService.MethodPerEndpoint =
     Thrift.client.build[UserManagerService.MethodPerEndpoint]("127.0.0.1:7202")
 
-  val addressBookApi = AddressBookApi(addressBookDb, userManager)
+  val addressBookApi = AddressBookApi(addressBookDb, userManager, config)
 
   val api: Service[Request, Response] = addressBookApi.api
     .handle({
